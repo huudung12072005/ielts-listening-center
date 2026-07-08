@@ -1937,6 +1937,42 @@
         const listeningVideo = document.getElementById('listening-video');
         const btnToggleVideo = document.getElementById('btn-toggle-video');
 
+        // Tự động sửa lỗi sai lệch hoa thường (case-sensitivity) của tệp tin audio
+        listeningVideo.addEventListener('error', function(e) {
+            const currentSrc = listeningVideo.src;
+            if (!currentSrc) return;
+            
+            // Tránh lặp vô hạn nếu đã thử fallback
+            if (listeningVideo.getAttribute('data-fallback-tried') === 'true') {
+                listeningVideo.removeAttribute('data-fallback-tried');
+                return;
+            }
+            
+            let newSrc = null;
+            // Nếu đường dẫn chứa 'part' (chữ thường), thử đổi sang 'Part' (chữ hoa) và ngược lại
+            if (currentSrc.includes('part')) {
+                newSrc = currentSrc.replace(/part/g, 'Part');
+            } else if (currentSrc.includes('Part')) {
+                newSrc = currentSrc.replace(/Part/g, 'part');
+            } else if (currentSrc.includes('section')) {
+                newSrc = currentSrc.replace(/section/g, 'Section');
+            } else if (currentSrc.includes('Section')) {
+                newSrc = currentSrc.replace(/Section/g, 'section');
+            }
+            
+            if (newSrc && newSrc !== currentSrc) {
+                console.warn(`Không tải được audio: ${currentSrc}. Thử tải file thay thế: ${newSrc}`);
+                listeningVideo.setAttribute('data-fallback-tried', 'true');
+                
+                const wasPlaying = !listeningVideo.paused;
+                listeningVideo.src = newSrc;
+                listeningVideo.load();
+                if (wasPlaying) {
+                    listeningVideo.play().catch(err => console.log("Không thể tự động phát tiếp:", err));
+                }
+            }
+        }, true);
+
         btnToggleVideo.onclick = () => {
             videoCollapsed = !videoCollapsed;
             if (videoCollapsed) {
