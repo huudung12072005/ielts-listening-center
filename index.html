@@ -1455,8 +1455,12 @@
                     } else {
                         buildQuestionPalette();
                         totalSeconds = 2400; // 40 Phút cho phần Listening
-                        document.getElementById('btn-submit-answers').textContent = "NỘP BÀI (SUBMIT)";
-                        document.getElementById('btn-submit-answers').style.backgroundColor = "#218c74";
+                        const submitBtn = document.getElementById('btn-submit-answers');
+                        if (submitBtn) {
+                            submitBtn.disabled = false;
+                            submitBtn.textContent = "NỘP BÀI (SUBMIT)";
+                            submitBtn.style.backgroundColor = "#218c74";
+                        }
                         document.getElementById('ielts-timer-widget').style.backgroundColor = "#2ecc71";
                         startSmartIeltsTimer();
                     }
@@ -1795,7 +1799,20 @@
                 flags: flaggedQuestions,
                 submittedAt: new Date().toISOString()
             };
-            saveLocalDatabase(db);
+
+            try {
+                saveLocalDatabase(db);
+            } catch (err) {
+                console.warn("Storage quota exceeded for db, saving lightweight version:", err);
+                try {
+                    for (const k in db.testHistory) {
+                        delete db.testHistory[k].questionsHTML;
+                    }
+                    saveLocalDatabase(db);
+                } catch (e2) {
+                    console.error("Failed to save db to localStorage:", e2);
+                }
+            }
 
             const submission = {
                 id: 'sub_lis_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9),
@@ -1810,13 +1827,42 @@
                 submittedAt: new Date().toISOString()
             };
 
-            let allSubmissions = JSON.parse(localStorage.getItem('ielts_listening_all_submissions') || '[]');
-            allSubmissions.unshift(submission);
-            localStorage.setItem('ielts_listening_all_submissions', JSON.stringify(allSubmissions));
+            try {
+                let allSubmissions = JSON.parse(localStorage.getItem('ielts_listening_all_submissions') || '[]');
+                allSubmissions.unshift(submission);
+                if (allSubmissions.length > 30) {
+                    allSubmissions = allSubmissions.slice(0, 30);
+                }
+                localStorage.setItem('ielts_listening_all_submissions', JSON.stringify(allSubmissions));
+            } catch (err) {
+                console.warn("Storage quota exceeded for allSubmissions, trimming questionsHTML:", err);
+                try {
+                    let allSubmissions = JSON.parse(localStorage.getItem('ielts_listening_all_submissions') || '[]');
+                    submission.questionsHTML = "";
+                    allSubmissions.unshift(submission);
+                    allSubmissions.forEach(sub => sub.questionsHTML = "");
+                    localStorage.setItem('ielts_listening_all_submissions', JSON.stringify(allSubmissions.slice(0, 20)));
+                } catch (e2) {
+                    console.error("Failed to save submission to localStorage:", e2);
+                }
+            }
 
             lastSubmission = submission;
 
-            // Gửi dữ liệu đồng bộ Cloud Sheets (Ghi chú Listening trong Volume)
+            // Gửi dữ liệu đồng bộ Cloud Sheets (loại bỏ HTML nặng nề để payload gọn nhẹ ~1-2KB, tránh treo/timeout)
+            const lightDb = {
+                studentName: db.studentName,
+                testHistory: {}
+            };
+            for (const [k, v] of Object.entries(db.testHistory || {})) {
+                lightDb.testHistory[k] = {
+                    score: v.score,
+                    band: v.band,
+                    answers: v.answers,
+                    submittedAt: v.submittedAt
+                };
+            }
+
             const payload = {
                 name: studentName,
                 volume: `Volume ${currentVolume} (Listening)`,
@@ -1825,12 +1871,28 @@
                 band: `${calculatedBand}`,
                 answers: JSON.stringify(studentResponses),
                 submittedAt: new Date().toISOString(),
-                fullBackup: JSON.stringify(db)
+                fullBackup: JSON.stringify(lightDb)
             };
 
             const submitBtn = document.getElementById('btn-submit-answers');
-            submitBtn.disabled = true;
-            submitBtn.textContent = "Đang đồng bộ...";
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = "Đang đồng bộ...";
+            }
+
+            // Timeout controller 6 giây để luôn hiển thị kết quả kịp thời kể cả khi Google Apps Script bị trễ
+            let isFinalized = false;
+            const finalizeSubmission = () => {
+                if (!isFinalized) {
+                    isFinalized = true;
+                    showResultView(correctAnswersCount, calculatedBand, studentResponses);
+                }
+            };
+
+            const syncTimeout = setTimeout(() => {
+                console.warn("Cloud sync timeout after 6s. Proceeding to display results.");
+                finalizeSubmission();
+            }, 6000);
 
             fetch(WEB_APP_URL, {
                 method: "POST",
@@ -1841,16 +1903,23 @@
                 body: JSON.stringify(payload)
             })
             .then(() => {
-                showResultView(correctAnswersCount, calculatedBand, studentResponses);
+                clearTimeout(syncTimeout);
+                finalizeSubmission();
             })
             .catch(err => {
+                clearTimeout(syncTimeout);
                 console.error("Lỗi đồng bộ Cloud:", err);
-                alert("Kết nối mạng gián đoạn, kết quả hiện tại tạm thời được lưu trữ cục bộ.");
-                showResultView(correctAnswersCount, calculatedBand, studentResponses);
+                finalizeSubmission();
             });
         }
 
         function showResultView(score, band, responses) {
+            const submitBtn = document.getElementById('btn-submit-answers');
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = "NỘP BÀI (SUBMIT)";
+            }
+
             document.getElementById('test-view').style.display = 'none';
 
             // Điền thông tin kết quả
